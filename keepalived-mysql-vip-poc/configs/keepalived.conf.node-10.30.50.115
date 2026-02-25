@@ -1,0 +1,68 @@
+! Keepalived configuration for MySQL VIPs (example)
+! Node: 10.30.50.115
+
+vrrp_script chk_mysql_writer {
+    script "/etc/keepalived/check_mysql_writer.sh"
+    interval 5
+    rise 2
+    fall 2
+}
+
+vrrp_script chk_mysql_reader {
+    script "/bin/sh -c 'MAX_LAG_SECONDS=120 /etc/keepalived/check_mysql_reader.sh'"
+    interval 5
+}
+
+# Writer VIP
+vrrp_instance VI_MYSQL_WRITER {
+    state MASTER
+    interface eth0
+    virtual_router_id 51
+    priority 10
+    advert_int 1
+    unicast_src_ip 10.30.50.115
+    unicast_peer {
+        10.30.50.117
+    }
+
+    authentication {
+        auth_type PASS
+        auth_pass MySecret123
+    }
+
+    virtual_ipaddress {
+        192.168.88.18/32
+    }
+
+    track_script {
+        chk_mysql_writer
+    }
+}
+
+# Reader VIP
+vrrp_instance VI_MYSQL_READER {
+    state BACKUP
+    interface eth0
+    virtual_router_id 52
+    priority 10
+    advert_int 1
+    unicast_src_ip 10.30.50.115
+    unicast_peer {
+        10.30.50.117
+    }
+
+    authentication {
+        auth_type PASS
+        auth_pass MySecret123
+    }
+
+    virtual_ipaddress {
+        192.168.88.19/32
+    }
+
+    track_script {
+        chk_mysql_writer weight 5
+        chk_mysql_reader weight 10
+    }
+}
+
