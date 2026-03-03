@@ -1,15 +1,36 @@
 ! Keepalived configuration for MySQL VIPs (example)
 ! Node: 10.30.50.117
+global_defs {
+    enable_script_security
+    script_user root
+}
 
+! Writer: node must be primary (read_only=0, not replica).
+! Optional: add --allow-primary-as-replica if this node can be configured as replica but still hold writer VIP.
+!
+! On writer check failure: default = VIP can be removed if no healthy candidates. "Stick" (original IP
+! controller): uncomment "weight 5" below so VIP stays on node — only priority changes, no removal.
 vrrp_script chk_mysql_writer {
-    script "/etc/keepalived/check_mysql_writer.sh"
+    script "/etc/keepalived/check_mysql.sh --primary"
     interval 5
     rise 2
     fall 2
+    ! weight 5
 }
 
+! Reader: node must be healthy replica (read_only=1, IO/SQL running, lag under threshold).
+! Use --max-lag N to set max replication lag in seconds (default 300).
 vrrp_script chk_mysql_reader {
-    script "/bin/sh -c 'MAX_LAG_SECONDS=120 /etc/keepalived/check_mysql_reader.sh'"
+    script "/etc/keepalived/check_mysql.sh --replica --max-lag 300"
+    interval 5
+}
+
+! Writer-or-reader: node OK if it is either healthy writer (primary) OR healthy reader (replica) (Reader VIP fallback).
+! Pass same options as above so both roles are evaluated with your thresholds:
+!   --allow-primary-as-replica  allow primary even when configured as replica (matches writer check)
+!   --max-lag N                 max lag for replica branch (matches reader check)
+vrrp_script chk_mysql_writer_or_reader {
+    script "/etc/keepalived/check_mysql.sh --writer-or-reader --allow-primary-as-replica --max-lag 300"
     interval 5
 }
 
@@ -37,6 +58,9 @@ vrrp_instance VI_MYSQL_WRITER {
     track_script {
         chk_mysql_writer
     }
+
+    notify_master "/etc/keepalived/keepalived_mysql_prom_handler.sh --state MASTER --vip 192.168.88.18 --cluster-virtual-ip-name mysql_writer_vip"
+    notify_fault "/etc/keepalived/keepalived_mysql_prom_handler.sh --state FAULT --vip 192.168.88.18 --cluster-virtual-ip-name mysql_writer_vip"
 }
 
 # Reader VIP
@@ -60,9 +84,15 @@ vrrp_instance VI_MYSQL_READER {
         192.168.88.19/32
     }
 
+    ! Eligibility: node must pass chk_mysql_writer_or_reader (healthy as writer or reader).
+    ! Priority boost: writer +5, reader +10 — replica preferred for Reader VIP when both are healthy.
     track_script {
         chk_mysql_writer weight 5
         chk_mysql_reader weight 10
+        chk_mysql_writer_or_reader
     }
+
+    notify_master "/etc/keepalived/keepalived_mysql_prom_handler.sh --state MASTER --vip 192.168.88.19 --cluster-virtual-ip-name mysql_reader_vip"
+    notify_fault "/etc/keepalived/keepalived_mysql_prom_handler.sh --state FAULT --vip 192.168.88.19 --cluster-virtual-ip-name mysql_reader_vip"
 }
 
