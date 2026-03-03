@@ -60,8 +60,8 @@ vrrp_instance VI_MYSQL_WRITER {
         chk_mysql_writer
     }
 
-    notify_master "/etc/keepalived/keepalived_mysql_prom_handler.sh --state MASTER --vip 192.168.88.18 --cluster-virtual-ip-name mysql_writer_vip"
-    notify_fault "/etc/keepalived/keepalived_mysql_prom_handler.sh --state FAULT --vip 192.168.88.18 --cluster-virtual-ip-name mysql_writer_vip"
+    notify_master "/etc/keepalived/keepalived_mysql_prom_handler.sh --state MASTER --vip 192.168.88.18"
+    notify_fault "/etc/keepalived/keepalived_mysql_prom_handler.sh --state FAULT --vip 192.168.88.18"
 }
 
 # Reader VIP
@@ -93,7 +93,7 @@ vrrp_instance VI_MYSQL_READER {
         chk_mysql_writer_or_reader
     }
 
-    notify_master "/etc/keepalived/keepalived_mysql_prom_handler.sh --state MASTER --vip 192.168.88.19 --cluster-virtual-ip-name mysql_reader_vip"
-    notify_fault "/etc/keepalived/keepalived_mysql_prom_handler.sh --state FAULT --vip 192.168.88.19 --cluster-virtual-ip-name mysql_reader_vip"
+    notify_master "/etc/keepalived/keepalived_mysql_prom_handler.sh --state MASTER --vip 192.168.88.19"
+    notify_fault "/etc/keepalived/keepalived_mysql_prom_handler.sh --state FAULT --vip 192.168.88.19"
 }
 
