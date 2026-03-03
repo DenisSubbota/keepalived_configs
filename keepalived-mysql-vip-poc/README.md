@@ -94,7 +94,7 @@ The health-check script writes a single log file: **`keepalived_check_mysql.log`
 
 ## Alerting
 
-Writer and Reader VIP state changes can be surfaced via the **notify handler** `keepalived_mysql_prom_handler.sh`. Call it with flags: `--state MASTER|FAULT --vip <ip>` and optional `--cluster <name>`. Example: `notify_master "/etc/keepalived/keepalived_mysql_prom_handler.sh --state MASTER --vip 192.168.88.18"`. The handler writes **`gas_keepalived_mysql`** with labels `cluster`, `vip`; value 0=healthy (MASTER), 1=failover_error (FAULT). Output: `PROM_OUTPUT_DIR/keepalived_mysql_<vip_sanitized>.prom` (mode 0644). Copy `keepalived_mysql_prom_handler.sh` to `/etc/keepalived/` and make it executable.
+Writer and Reader VIP state changes can be surfaced via the **notify handler** `keepalived_mysql_prom_handler.sh`. Call it with flags: `--state MASTER|FAULT --vip <ip> --role writer|reader` and optional `--cluster <name>`. Example: `notify_master "/etc/keepalived/keepalived_mysql_prom_handler.sh --state MASTER --vip 192.168.88.18 --role writer"`. The handler writes **`gas_keepalived_mysql`** with labels `cluster`, `vip`, `role` (writer/reader); value 0=healthy (MASTER), 1=failover_error (FAULT). Output: `PROM_OUTPUT_DIR/keepalived_mysql_<vip_sanitized>.prom` (mode 0644). Copy `keepalived_mysql_prom_handler.sh` to `/etc/keepalived/` and make it executable.
 
 ## Quick start (example)
 

@@ -60,8 +60,8 @@ vrrp_instance VI_MYSQL_WRITER {
         chk_mysql_writer
     }
 
-    notify_master "/etc/keepalived/keepalived_mysql_prom_handler.sh --state MASTER --vip 192.168.88.18"
-    notify_fault "/etc/keepalived/keepalived_mysql_prom_handler.sh --state FAULT --vip 192.168.88.18"
+    notify_master "/etc/keepalived/keepalived_mysql_prom_handler.sh --state MASTER --vip 192.168.88.18 --role writer"
+    notify_fault "/etc/keepalived/keepalived_mysql_prom_handler.sh --state FAULT --vip 192.168.88.18 --role writer"
 }
 
 # Reader VIP
@@ -93,7 +93,7 @@ vrrp_instance VI_MYSQL_READER {
         chk_mysql_writer_or_reader
     }
 
-    notify_master "/etc/keepalived/keepalived_mysql_prom_handler.sh --state MASTER --vip 192.168.88.19"
-    notify_fault "/etc/keepalived/keepalived_mysql_prom_handler.sh --state FAULT --vip 192.168.88.19"
+    notify_master "/etc/keepalived/keepalived_mysql_prom_handler.sh --state MASTER --vip 192.168.88.19 --role reader"
+    notify_fault "/etc/keepalived/keepalived_mysql_prom_handler.sh --state FAULT --vip 192.168.88.19 --role reader"
 }
 
