@@ -6,21 +6,21 @@
 #   --replica           Node must be healthy replica (read_only=1, IO/SQL running, lag under --max-lag)
 #   --writer-or-reader  Node must be either healthy primary OR healthy replica (for shared VIP)
 #
-# Options (all optional, no env vars):
+# Options
 #   --defaults-file PATH  MySQL client option file (same as mysql --defaults-file) [default: /home/percona/.my.cnf]
 #   --mysql-bin PATH      mysql binary [default: mysql]
 #   --max-lag N           Default max replication lag (seconds) for --replica [default: 300]
-#   --no-vip-file PATH    If this file exists, exit 255 (do not claim VIP) [default: /etc/keepalived/no_vip]
+#   --no-vip-file PATH    If this file exist remove VIPs from node [default: /etc/keepalived/no_vip]
 #   --log-dir DIR         Log directory [default: /var/log/percona]
 #   --log-max-size N      Rotate when log exceeds N bytes [default: 52428800 = 50 MiB]
 #   --log-rotate-keep N   Keep N rotated log files [default: 7]
 #   --allow-primary-as-replica  Allow primary even if node is configured as replica (--primary only)
 #
-# Exit: 0 = check passed, 1 = check failed, 255 = do not claim VIP (no_vip file present)
+# Exit: 0 = check passed, 1 = check failed
 
 set -o nounset
 
-# --- Defaults (no env vars) ---
+# --- Defaults ---
 MYSQL_CNF_PATH="/home/percona/.my.cnf"
 MYSQL_BIN="mysql"
 MAX_LAG_SECONDS="300"
@@ -135,8 +135,8 @@ log() {
 
 # --- Shared: no_vip and config ---
 if [[ -e "$NO_VIP_FILE" ]]; then
-  log "no_vip file present, not claiming VIP"
-  exit 255
+  log "VIP disabled: $NO_VIP_FILE exists"
+  exit 1 
 fi
 
 if [[ ! -r "${MYSQL_CNF_PATH:-}" ]]; then
@@ -145,7 +145,7 @@ if [[ ! -r "${MYSQL_CNF_PATH:-}" ]]; then
 fi
 
 MYSQL_ARGS=(--defaults-file="$MYSQL_CNF_PATH" --connect-timeout=3 --batch --skip-column-names -s -N)
-# Vertical output (\G) must keep "Field: Value" lines for parsing; do not use -s -N --skip-column-names
+# Vertical output (\G) must keep "Field: Value" lines for parsing; 
 MYSQL_ARGS_VERTICAL=(--defaults-file="$MYSQL_CNF_PATH" --connect-timeout=3 --batch)
 run_mysql() {
   "$MYSQL_BIN" "${MYSQL_ARGS[@]}" -e "$1" 2>/dev/null
@@ -155,12 +155,12 @@ run_mysql_vertical() {
 }
 
 # --- Check: primary (writer) ---
-# Success: read_only=0, and (if ALLOW_PRIMARY_AS_REPLICA≠1) not configured as replica.
+# Success: read_only=0, and ( if ALLOW_PRIMARY_AS_REPLICA != 1 ) not configured as replica.
 check_primary() {
-  local ro
-  ro="$(run_mysql "SELECT @@global.read_only;" 2>/dev/null | tr -d '\r\n' | awk '{print $1}')"
-  if [[ "$ro" != "0" ]]; then
-    log "primary failed: read_only=${ro:-<empty>} (must be 0)"
+  local read_only
+  read_only="$(run_mysql "SELECT @@global.read_only;" 2>/dev/null | tr -d '\r\n' | awk '{print $1}')"
+  if [[ "$read_only" != "0" ]]; then
+    log "primary failed: read_only=${read_only:-<empty>} (must be 0)"
     return 1
   fi
 
@@ -181,7 +181,9 @@ check_primary() {
 # --- Check: replica (reader) ---
 # Success: read_only=1, IO and SQL running, lag < LAG_SECONDS.
 check_replica() {
-  local status_output io_running sql_running lag_val lag ro
+  local status_output io_running sql_running lag_val lag read_only
+
+  read_only="$(run_mysql "SELECT @@global.read_only;" 2>/dev/null | tr -d '\r\n' | awk '{print $1}')"
 
   status_output="$(run_mysql_vertical "SHOW REPLICA STATUS\\G")"
   [[ -z "$status_output" ]] && status_output="$(run_mysql_vertical "SHOW SLAVE STATUS\\G" || true)"
@@ -191,24 +193,24 @@ check_replica() {
     return 1
   fi
 
-  io_running="$(echo "$status_output" | awk -F': ' '/Replica_IO_Running:|Slave_IO_Running:/ {print $2; exit}')"
-  sql_running="$(echo "$status_output" | awk -F': ' '/Replica_SQL_Running:|Slave_SQL_Running:/ {print $2; exit}')"
+  io_running="$(echo "$status_output" | awk -F': ' '/Replica_IO_Running:|Slave_IO_Running:/ {print $2; exit}')"; io_running="${io_running:-No}"
+  sql_running="$(echo "$status_output" | awk -F': ' '/Replica_SQL_Running:|Slave_SQL_Running:/ {print $2; exit}')"; sql_running="${sql_running:-No}"
   lag_val="$(echo "$status_output" | awk -F': ' '/Seconds_Behind_Source:|Seconds_Behind_Master:/ {print $2; exit}')"
-
-  io_running="${io_running:-No}"
-  sql_running="${sql_running:-No}"
   case "$lag_val" in
     ""|NULL|null) lag=999999 ;;
     *)            lag="$lag_val" ;;
   esac
 
-  ro="$(run_mysql "SELECT @@global.read_only;" 2>/dev/null | tr -d '\r\n' | awk '{print $1}')"
-
-  if [[ "$io_running" == "Yes" && "$sql_running" == "Yes" && "$lag" -lt "$MAX_LAG_SECONDS" && "$ro" == "1" ]]; then
+  if [[ "$io_running" == "Yes" && "$sql_running" == "Yes" && "$lag" -lt "$MAX_LAG_SECONDS" && "$read_only" == "1" ]]; then
     log "replica OK: node is healthy replica (lag=${lag})"
     return 0
   fi
-  log "replica failed: io=$io_running sql=$sql_running lag=${lag:-?} read_only=${ro:-<empty>} (need Yes/Yes/<${MAX_LAG_SECONDS}/1)"
+  failure_reasons=()
+  [[ "$io_running" != "Yes" ]]   && failure_reasons+=("IO thread not running (is: ${io_running:-<empty>})")
+  [[ "$sql_running" != "Yes" ]]  && failure_reasons+=("SQL thread not running (is: ${sql_running:-<empty>})")
+  [[ "$lag" -ge "$MAX_LAG_SECONDS" ]] && failure_reasons+=("lag ${lag:-?}s >= ${MAX_LAG_SECONDS}s")
+  [[ "$read_only" != "1" ]]      && failure_reasons+=("read_only is ${read_only:-<empty>}, must be 1")
+  log "replica failed: $(IFS='; '; echo "${failure_reasons[*]}")"
   return 1
 }
 
@@ -223,10 +225,7 @@ case "$MODE" in
     exit $?
     ;;
   writer_or_reader)
-    if check_primary; then
-      exit 0
-    fi
-    if check_replica; then
+    if check_primary || check_replica; then
       exit 0
     fi
     log "writer_or_reader failed: node is neither healthy primary nor healthy replica"
