@@ -1,73 +1,66 @@
 #!/bin/bash
 # Keepalived notify handler: writes Prometheus textfile metrics for Writer or Reader VIP
-# state (MASTER/FAULT). Labels: cluster, vip, role (writer|reader). Metric value 0=healthy, 1=failover_error.
+# status ok/fail. Labels: cluster, vip, role (writer|reader). Metric value 0=ok, 1=fail.
 #
 # Usage:
-#   With flags:  /path/to/script --state MASTER --vip 192.168.88.18 --role writer [--cluster NAME]
+#   /path/to/script --status ok --vip 192.168.88.18 --role writer --cluster NAME [--prom-output-dir DIR]
 #
-# Options:
-#   --state STATE  MASTER, BACKUP, or FAULT. Required if using flags. Only MASTER/FAULT are written.
-#   --vip IP       Virtual IP address (required). Or set VIP in env.
-#   --role ROLE    writer or reader (required for label). Or set ROLE in env.
-#   --cluster NAME Cluster label (default: default). Or set CLUSTER_NAME in env.
+# Options (flags only, no env):
+#   --status STATUS   ok or fail (required).
+#   --vip IP          Virtual IP address (required).
+#   --role ROLE       writer or reader (required).
+#   --cluster NAME    Cluster label (required).
+#   --prom-output-dir DIR  Directory for .prom file (default: /home/percona/pmm/collectors/textfile-collector/high-resolution).
 #
-# Output: PROM_OUTPUT_DIR/keepalived_mysql_<vip_sanitized>.prom. File mode 0644.
+# Output: <prom-output-dir>/keepalived_mysql_<vip>.prom. File mode 0644.
 
 set -o nounset
 
-STATE=""
-VIP="${VIP:-}"
-ROLE="${ROLE:-}"
-CLUSTER_NAME="${CLUSTER_NAME:-default}"
-PROM_OUTPUT_DIR="${PROM_OUTPUT_DIR:-/home/percona/pmm/collectors/textfile-collector/high-resolution}"
+STATUS=""
+VIP=""
+ROLE=""
+CLUSTER_NAME=""
+PROM_OUTPUT_DIR="/home/percona/pmm/collectors/textfile-collector/high-resolution"
 
-# Parse flags (if first arg looks like a flag)
-if [[ "${1:-}" == --* ]]; then
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --state)   STATE="${2:-}"; shift 2 ;;
-      --vip)     VIP="${2:-}";   shift 2 ;;
-      --role)    ROLE="${2:-}";  shift 2 ;;
-      --cluster) CLUSTER_NAME="${2:-}"; shift 2 ;;
-      *) shift ;;
-    esac
-  done
-else
-  STATE="${3:-}"
-fi
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --status)     STATUS="${2:-}"; shift 2 ;;
+    --vip)        VIP="${2:-}"; shift 2 ;;
+    --role)       ROLE="${2:-}"; shift 2 ;;
+    --cluster)    CLUSTER_NAME="${2:-}"; shift 2 ;;
+    --prom-output-dir) PROM_OUTPUT_DIR="${2:-}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
 
-[[ -z "$STATE" ]] && exit 0
-[[ "$STATE" != "MASTER" && "$STATE" != "FAULT" ]] && exit 0
+ERR="keepalived_mysql_prom_handler"
+[[ -z "$STATUS" ]] && { echo "$ERR: error: missing --status" >&2; exit 1; }
+[[ "$STATUS" != "ok" && "$STATUS" != "fail" ]] && { echo "$ERR: error: --status must be ok or fail, got: $STATUS" >&2; exit 1; }
+[[ -z "$VIP" ]] && { echo "$ERR: error: missing --vip" >&2; exit 1; }
+[[ -z "$ROLE" ]] && { echo "$ERR: error: missing --role" >&2; exit 1; }
+[[ -z "$CLUSTER_NAME" ]] && { echo "$ERR: error: missing --cluster" >&2; exit 1; }
+[[ -z "$PROM_OUTPUT_DIR" ]] && { echo "$ERR: error: missing --prom-output-dir" >&2; exit 1; }
 
-if [[ "$STATE" == "FAULT" ]]; then
+if [[ "$STATUS" == "fail" ]]; then
   VALUE=1
 else
   VALUE=0
 fi
 
-[[ -z "$VIP" ]] && exit 0
-
 mkdir -p "$PROM_OUTPUT_DIR" 2>/dev/null || true
 [[ -d "$PROM_OUTPUT_DIR" && -w "$PROM_OUTPUT_DIR" ]] || exit 0
 
-# One file per VIP (dots -> underscores for filename)
-VIP_SAFE="${VIP//./_}"
-OUTPUT_FILE="${PROM_OUTPUT_DIR}/keepalived_mysql_${VIP_SAFE}.prom"
+OUTPUT_FILE="${PROM_OUTPUT_DIR}/keepalived_mysql_${VIP}.prom"
 TS=$(date +%s)
 
-# role (writer/reader) optional but informative
-if [[ -n "$ROLE" ]]; then
-  LABELS="cluster=\"$CLUSTER_NAME\",vip=\"$VIP\",role=\"$ROLE\""
-else
-  LABELS="cluster=\"$CLUSTER_NAME\",vip=\"$VIP\""
-fi
+LABELS="cluster=\"$CLUSTER_NAME\",vip=\"$VIP\",role=\"$ROLE\""
 
 {
-  echo "# HELP gas_keepalived_mysql Keepalived MySQL VIP state"
-  echo "# TYPE gas_keepalived_mysql untyped"
-  echo "# HELP gas_keepalived_mysql_last_report_ts Keepalived MySQL VIP last report timestamp"
-  echo "# TYPE gas_keepalived_mysql_last_report_ts untyped"
-  printf 'gas_keepalived_mysql{%s} %s\n' "$LABELS" "$VALUE"
-  printf 'gas_keepalived_mysql_last_report_ts{%s} %s\n' "$LABELS" "$TS"
+  echo "# HELP percona_keepalived_mysql Keepalived MySQL VIP status (0=ok, 1=fail)"
+  echo "# TYPE percona_keepalived_mysql untyped"
+  echo "# HELP percona_keepalived_mysql_last_report_ts Keepalived MySQL VIP last report timestamp"
+  echo "# TYPE percona_keepalived_mysql_last_report_ts untyped"
+  printf 'percona_keepalived_mysql{%s} %s\n' "$LABELS" "$VALUE"
+  printf 'percona_keepalived_mysql_last_report_ts{%s} %s\n' "$LABELS" "$TS"
 } > "$OUTPUT_FILE" 2>/dev/null || true
 chmod 644 "$OUTPUT_FILE" 2>/dev/null || true

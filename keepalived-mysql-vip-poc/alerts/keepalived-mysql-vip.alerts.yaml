@@ -1,0 +1,21 @@
+# Keepalived MySQL VIP alert.
+# Metric: percona_keepalived_mysql (0=ok/VIP held, 1=fail/VIP not held).
+# Available labels after PMM scrape relabeling: cluster, node_name.
+# (vip and role are written by the handler but stripped during scrape relabeling.)
+#
+# Per-node VIP health:
+#   Each node should hold at least one VIP (writer or reader).
+#   Value 1 means the node is not able to hold any VIP.
+- alert: Percona_MS_KeepalivedMySQLVIPUnhealthy
+  expr: |
+    min by (cluster, node_name) (percona_keepalived_mysql) == 1
+  for: 1m
+  labels:
+    severity: critical
+  annotations:
+    summary: "CRITICAL - Keepalived MySQL VIP unhealthy on {{ $labels.node_name }} ({{ $labels.cluster }})"
+    description: |
+      Node {{ $labels.node_name }} in cluster {{ $labels.cluster }} cannot hold writer or reader VIP.
+      Check: systemctl status keepalived, journalctl -u keepalived,
+      /var/log/percona/keepalived_check_mysql.log, and MySQL replication status.
+

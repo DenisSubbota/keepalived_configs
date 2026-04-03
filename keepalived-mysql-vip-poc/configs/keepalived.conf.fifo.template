@@ -1,0 +1,107 @@
+! Keepalived configuration template for MySQL VIPs (FIFO-based alerting)
+!
+! Uses vrrp_notify_fifo + notify_fifo_handler.sh instead of per-instance
+! notify_master/notify_backup/notify_fault hooks. This enables detection of
+! priority changes in sticky VIP mode (where state stays MASTER but priority
+! drops when a check script fails).
+!
+! Edit only the variables below for each node.
+!------------------------------------------------
+$KEEPALIVED_INTERFACE=eth0
+$KEEPALIVED_NODE_IP=10.30.50.115
+$KEEPALIVED_PEER_IP=10.30.50.117
+
+$KEEPALIVED_WRITER_VIP=192.168.88.18
+$KEEPALIVED_READER_VIP=192.168.88.19
+
+$KEEPALIVED_CLUSTER=mycluster
+$KEEPALIVED_MAX_LAG_SECONDS=300
+!------------------------------------------------
+
+global_defs {
+    enable_script_security
+    script_user root
+    vrrp_notify_fifo /run/keepalived-vrrp.fifo
+    vrrp_notify_fifo_script "/etc/keepalived/notify_fifo_handler.sh --cluster ${KEEPALIVED_CLUSTER} --writer-vip ${KEEPALIVED_WRITER_VIP} --reader-vip ${KEEPALIVED_READER_VIP}"
+    vrrp_notify_priority_changes true
+}
+
+! Writer: node must be writable.
+! On writer failure:
+! - VIP - removed if no healthy candidates 
+vrrp_script chk_mysql_writer {
+    script "/etc/keepalived/check_mysql.sh --primary --allow-replica-except-from ${KEEPALIVED_PEER_IP}"
+    interval 5
+    rise 2
+    fall 2
+}
+
+! Reader: node must be a healthy replica.
+vrrp_script chk_mysql_reader {
+    script "/etc/keepalived/check_mysql.sh --replica --max-lag ${KEEPALIVED_MAX_LAG_SECONDS}"
+    interval 5
+}
+
+! Reader fallback: node may be either a healthy reader or a healthy writer.
+! On both reader failure:
+! - VIP - removed if no healthy candidates 
+vrrp_script chk_mysql_writer_or_reader {
+    script "/etc/keepalived/check_mysql.sh --writer-or-reader --allow-replica-except-from ${KEEPALIVED_PEER_IP} --max-lag ${KEEPALIVED_MAX_LAG_SECONDS}"
+    interval 5
+}
+
+# Writer VIP
+vrrp_instance VI_MYSQL_WRITER {
+    state MASTER
+    interface $KEEPALIVED_INTERFACE
+    virtual_router_id 51
+    priority 10
+    advert_int 1
+    unicast_src_ip $KEEPALIVED_NODE_IP
+    unicast_peer {
+        $KEEPALIVED_PEER_IP
+    }
+
+    authentication {
+        auth_type PASS
+        auth_pass MySecret123
+    }
+
+    virtual_ipaddress {
+        ${KEEPALIVED_WRITER_VIP}/32
+    }
+
+    track_script {
+        chk_mysql_writer
+        ! Sticky VIP mode: chk_mysql_writer weight -5
+    }
+}
+
+# Reader VIP
+vrrp_instance VI_MYSQL_READER {
+    state BACKUP
+    interface $KEEPALIVED_INTERFACE
+    virtual_router_id 52
+    priority 10
+    advert_int 1
+    unicast_src_ip $KEEPALIVED_NODE_IP
+    unicast_peer {
+        $KEEPALIVED_PEER_IP
+    }
+
+    authentication {
+        auth_type PASS
+        auth_pass MySecret123
+    }
+
+    virtual_ipaddress {
+        ${KEEPALIVED_READER_VIP}/32
+    }
+
+    track_script {
+       chk_mysql_writer weight 5
+       chk_mysql_reader weight 10
+       chk_mysql_writer_or_reader
+      ! Sticky VIP mode: chk_mysql_writer_or_reader weight -5 
+    }
+}

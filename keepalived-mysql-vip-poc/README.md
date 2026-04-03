@@ -1,109 +1,179 @@
 # Keepalived MySQL VIP POC
-Proof of concept for using **Keepalived (VRRP)** to manage **MySQL Writer/Reader VIPs** in an async *primary → replica* topology.
 
----
-Logic of the Keepalive IP controller 
+This project shows a simple way to keep stable MySQL client endpoints by using Keepalived and local MySQL health checks.
 
-# Writer VIP 
-Node considered as healty Writer if next conditions are true:
-- Node is writable: @@global.read_only=0
-- Node is NOT a replica: no output from SHOW REPLICA STATUS/SHOW SLAVE STATUS (unless ALLOW_PRIMARY_AS_REPLICA=1)
-Otherwise primary is considered as unhealthy, and no others primary candidates available: 
-- Writer VIP is removed from interface
-- ALERT RAISED for Writer VIP
+It manages two VIPs:
 
-# Reader VIP 
-Node considered as healty Reader if next conditions are true:
-- Node is read-only: @@global.read_only=1
-- Node is Healthy replica: SQL and IO threads running (`Yes`) 
-- Node has healthy replication lag: replication lag is below threshold: < `MAX_LAG_SECONDS` ( Default 300 seconds )
-If replica node(s) considered as unhelaty:
-- Reader VIP move to healty Writer instance, if no healty Writer available, VIP is removed from Interface.
-- Triggers the alert for Reader VIP
+| VIP role | Normal owner | Fallback |
+|----------|--------------|----------|
+| Writer VIP | Writable MySQL node | Another node that becomes writable |
+| Reader VIP | Healthy replica | The writer node if no healthy replica is available |
 
-## VIP assignment logic (current POC)
-### Writer VIP
+The configs in this repo are examples. Replace IPs, interface names, passwords, paths, and cluster labels to match your environment.
 
-Writer VIP is assigned only when **all** are true:
+## What It Does
 
-- Node is writable: `@@global.read_only=0`
-- Node is **not** a replica: no output from `SHOW REPLICA STATUS` / `SHOW SLAVE STATUS`
+Each node runs Keepalived and the same health-check scripts.
 
-If the node is not eligible, Writer VIP should be removed.
+Keepalived decides VIP ownership based on local MySQL state:
 
-**Caveat (single-replica setups):** If for any reason replication fails on the primary (e.g. the only replica disconnects, or replication breaks), conditions that depend on replication or node state can cause the writer check to fail and **remove the Writer VIP from that node**. With only one replica, this is risky: the VIP may move to the replica (which might not be ready for writes) or be lost, leaving applications without a writer. Prefer at least two replicas where possible, and monitor replication so you can fix or fail over in a controlled way.
-Optional: If you want to allow a node to still qualify as Writer **even if it is configured as a replica**, add `--allow-primary-as-replica` to the script:
+- Writer VIP stays on a node that is writable (`read_only=0`)
+- Reader VIP prefers a healthy replica (`read_only=1`, replication running, lag below threshold)
+- Reader VIP can fall back to the writer if no replica is healthy
+- If a node is put into maintenance with `/etc/keepalived/no_vip`, it stops being eligible for VIP ownership
 
-```conf
-vrrp_script chk_mysql_writer {
-    script "/etc/keepalived/check_mysql.sh --primary --allow-primary-as-replica"
-    interval 5
-    rise 2
-    fall 2
-}
+In this POC, the writer check is configured with `--allow-replica-except-from $KEEPALIVED_PEER_IP`. This allows a node with replication configured to hold the writer VIP, as long as it is not replicating from its peer. A node whose `Source_Host` matches the peer IP is treated as the downstream replica and will never win the writer VIP, even if it is temporarily writable.
+
+## Repository Layout
+
+| Path | Purpose |
+|------|---------|
+| `configs/` | Example Keepalived config for each node |
+| `scripts/check_mysql.sh` | MySQL health-check script used by Keepalived |
+| `scripts/keepalived_mysql_prom_handler.sh` | Optional notify script that writes Prometheus metrics |
+| `alerts/` | Example alert rule |
+| `tests/` | Manual failover scenarios and notes |
+
+## Main Components
+
+### 1. Keepalived
+
+There are two VRRP instances:
+
+- `VI_MYSQL_WRITER` manages the writer VIP
+- `VI_MYSQL_READER` manages the reader VIP
+
+The reader VIP is biased toward a healthy replica, but can still stay available on the writer when needed.
+
+### 2. MySQL health check
+
+`scripts/check_mysql.sh` supports three modes:
+
+- `--primary`: checks whether the node can own the writer VIP; requires `read_only=0` and no replication configured, unless `--allow-replica-except-from` is used
+- `--replica`: checks whether the node is a healthy replica
+- `--writer-or-reader`: checks whether the node is valid for the reader VIP, either as replica or fallback writer
+
+Important defaults:
+
+- MySQL credentials file: `/home/percona/.my.cnf`
+- Maintenance file: `/etc/keepalived/no_vip`
+- Log file: `/var/log/percona/keepalived_check_mysql.log`
+- Default max replica lag: `300` seconds
+
+### 3. Optional monitoring hook
+
+`scripts/keepalived_mysql_prom_handler.sh` is called from Keepalived notify hooks.
+
+It writes Prometheus textfile metrics when a VIP enters an OK or FAIL state. If you do not need this, you can remove or replace the notify commands in the Keepalived config.
+
+## Prerequisites
+
+Before using this setup, make sure you have:
+
+- Two Linux nodes with Keepalived installed
+- MySQL running locally on each node
+- A readable MySQL client credentials file for the check script
+- Network connectivity between the Keepalived peers
+- The correct network interface name in the config
+- Chosen VIP addresses for writer and reader traffic
+
+## Setup
+
+### 1. Adapt the example config
+
+Start from the files in `configs/` and update:
+
+- `interface`
+- `unicast_src_ip`
+- `unicast_peer`
+- `virtual_ipaddress`
+- `auth_pass`
+- notify script arguments such as `--vip` and `--cluster`
+
+### 2. Install the files on each node
+
+Typical layout:
+
+```bash
+sudo cp scripts/check_mysql.sh /etc/keepalived/check_mysql.sh
+sudo cp scripts/keepalived_mysql_prom_handler.sh /etc/keepalived/keepalived_mysql_prom_handler.sh
+sudo cp configs/keepalived.conf.node-<node-ip> /etc/keepalived/keepalived.conf
+sudo chmod +x /etc/keepalived/check_mysql.sh /etc/keepalived/keepalived_mysql_prom_handler.sh
 ```
 
-### Reader VIP
+### 3. Make sure MySQL access works
 
-Reader VIP is assigned only when **all** are true:
+The health-check script must be able to connect locally with the credentials file configured in `check_mysql.sh` or passed with `--defaults-file`.
 
-- Replication is healthy: IO + SQL threads running (`Yes`)
-- Replication lag is below threshold: `Seconds_Behind_Source` / `Seconds_Behind_Master` < `MAX_LAG_SECONDS`
-- Node is read-only: `@@global.read_only=1`
+Quick check:
 
-If no healthy replica is available, Reader VIP can fall back to the writer-eligible node.
+```bash
+mysql --defaults-file=/home/percona/.my.cnf -e "SELECT @@global.read_only;"
+```
 
-## Script usage (`check_mysql.sh`)
+### 4. Start or restart Keepalived
 
-One script covers all checks; everything is controlled by **flags** (no environment variables).
+```bash
+sudo systemctl restart keepalived
+sudo systemctl status keepalived --no-pager
+```
 
-**Modes** (exactly one):
+## How To Validate
 
-| Mode | Purpose |
-|------|--------|
-| `--primary` | Node must be writable primary: `read_only=0`, not configured as replica. Add `--allow-primary-as-replica` to allow primary even when configured as replica. |
-| `--replica` | Node must be healthy replica: `read_only=1`, IO/SQL running, lag &lt; threshold. Use `--max-lag N` for threshold (default 300). |
-| `--writer-or-reader` | Node is OK if it is either a healthy primary **or** a healthy replica (used for shared Reader VIP fallback). |
+Check VIP placement:
 
-**Options** (all optional, pass as flags):
+```bash
+ip addr show dev eth0
+```
 
-| Flag | Default | Description |
-|------|---------|--------------|
-| `--defaults-file` | `/home/percona/.my.cnf` | MySQL client option file (same as `mysql --defaults-file`). |
-| `--mysql-bin` | `mysql` | Path to `mysql` binary. |
-| `--max-lag` | `300` | Max replication lag (seconds) for `--replica`. |
-| `--no-vip-file` | `/etc/keepalived/no_vip` | If this file exists, script exits 255 (do not claim VIP). |
-| `--log-dir` | `/var/log/percona` | Log directory. |
-| `--log-max-size` | `52428800` (50 MiB) | Rotate log when it exceeds this many bytes. |
-| `--log-rotate-keep` | `7` | Number of rotated log files to keep. |
-| `--allow-primary-as-replica` | off | For `--primary`: allow node even if configured as replica. |
+Check Keepalived logs:
 
-Exit codes: **0** = passed, **1** = failed, **255** = do not claim VIP (e.g. `no_vip` file present). Run `check_mysql.sh --help` for a short summary.
+```bash
+sudo journalctl -u keepalived -n 50 --no-pager
+```
 
-## Configuration notes
+Run the health checks manually (replace `<PEER_IP>` with the IP of the other Keepalived node):
 
-- **Secrets**: The script uses a MySQL client option file (`--defaults-file`). That file must contain `[client]` with `user`, `password`, and connection (host/port or socket). Same format for MySQL, MariaDB, PXC, Percona.
-- **Single script**: Copy `check_mysql.sh` to `/etc/keepalived/` and use it for all checks. Override defaults with flags, e.g. `--defaults-file /etc/mysql/my.cnf --no-vip-file /etc/keepalived/no_vip`.
-- **Reader VIP fallback** (`chk_mysql_writer_or_reader`): Use `--writer-or-reader` so the node is OK as either writer (primary) or reader (replica). Pass the same options as your writer/reader checks for consistent behaviour: `--allow-primary-as-replica` if your writer check uses it, and `--max-lag N` to match your reader lag threshold. Example: `check_mysql.sh --writer-or-reader --allow-primary-as-replica --max-lag 300`.
-- **no_vip**: If the file at `--no-vip-file` exists, the script exits 255. Use this to force a node to relinquish VIP (e.g. before maintenance).
-- **Keepalived unicast**: configs are written for a 2-node unicast cluster; add more peers if needed.
+```bash
+/etc/keepalived/check_mysql.sh --primary --allow-replica-except-from <PEER_IP>
+/etc/keepalived/check_mysql.sh --replica --max-lag 300
+/etc/keepalived/check_mysql.sh --writer-or-reader --allow-replica-except-from <PEER_IP> --max-lag 300
+echo $?
+```
 
-## Logs
+If monitoring is enabled, confirm `.prom` files are being written to the configured output directory.
 
-The health-check script writes a single log file: **`keepalived_check_mysql.log`** under the directory given by `--log-dir` (default **`/var/log/percona`**). Each line is timestamped (ISO 8601) and prefixed with the check mode: `[primary]`, `[replica]`, or `[writer_or_reader]`, so you can see which check ran and whether it passed or failed. **Rotation** is size-based: when the file reaches `--log-max-size` bytes (default **50 MiB**), the script renames it to `keepalived_check_mysql.log.1`, shifts existing `.1` → `.2`, and so on, keeping up to `--log-rotate-keep` files (default **7**). No external logrotate is required. Override location and behaviour with `--log-dir`, `--log-max-size`, and `--log-rotate-keep`. Example: `tail -f /var/log/percona/keepalived_check_mysql.log`.
+## Expected Behavior
 
-## Alerting
+| Situation | Writer VIP | Reader VIP |
+|-----------|------------|------------|
+| Normal state | On writable node | On healthy replica |
+| Replica unhealthy | Stays on writable node | Moves to writer if writer is healthy |
+| Writer becomes read-only | Moves away or becomes unassigned | Can remain on healthy replica |
+| Maintenance file present on a node | That node should give up VIPs | That node should give up VIPs |
 
-Writer and Reader VIP state changes can be surfaced via the **notify handler** `keepalived_mysql_prom_handler.sh`. Call it with flags: `--state MASTER|FAULT --vip <ip> --role writer|reader` and optional `--cluster <name>`. Example: `notify_master "/etc/keepalived/keepalived_mysql_prom_handler.sh --state MASTER --vip 192.168.88.18 --role writer"`. The handler writes **`gas_keepalived_mysql`** with labels `cluster`, `vip`, `role` (writer/reader); value 0=healthy (MASTER), 1=failover_error (FAULT). Output: `PROM_OUTPUT_DIR/keepalived_mysql_<vip_sanitized>.prom` (mode 0644). Copy `keepalived_mysql_prom_handler.sh` to `/etc/keepalived/` and make it executable.
+## Troubleshooting
 
-## Quick start (example)
+Useful commands:
 
-1. Copy the node-specific config file to `/etc/keepalived/keepalived.conf` on each node.
-2. Copy `check_mysql.sh` and `keepalived_mysql_prom_handler.sh` to `/etc/keepalived/` and make them executable.
-3. Adjust:
-   - Interface name (`interface`)
-   - `unicast_src_ip` / `unicast_peer`
-   - VIPs in `virtual_ipaddress`
-   - `auth_pass`
-   - For replica lag threshold use `--max-lag N` in the script (default 300)
-4. Restart Keepalived and verify VIP assignment.
+```bash
+systemctl status keepalived --no-pager
+journalctl -u keepalived -f
+tail -f /var/log/percona/keepalived_check_mysql.log
+mysql --defaults-file=/home/percona/.my.cnf -e "SHOW REPLICA STATUS\G"
+```
+
+Things to check first:
+
+- The MySQL credentials file is readable
+- The local MySQL instance is reachable
+- The configured interface name is correct
+- The peer IPs are reachable
+- `/etc/keepalived/no_vip` is not present unless you intentionally enabled maintenance mode
+
+## Notes
+
+- This repository is a POC, not a full production design
+- The examples use unicast VRRP between two nodes
+- The script supports both `SHOW REPLICA STATUS` and legacy `SHOW SLAVE STATUS`
+- The example configs currently include a Prometheus notify hook, but that integration is optional

@@ -7,14 +7,17 @@
 #   --writer-or-reader  Node must be either healthy primary OR healthy replica (for shared VIP)
 #
 # Options
-#   --defaults-file PATH  MySQL client option file (same as mysql --defaults-file) [default: /home/percona/.my.cnf]
-#   --mysql-bin PATH      mysql binary [default: mysql]
-#   --max-lag N           Default max replication lag (seconds) for --replica [default: 300]
-#   --no-vip-file PATH    If this file exist remove VIPs from node [default: /etc/keepalived/no_vip]
-#   --log-dir DIR         Log directory [default: /var/log/percona]
-#   --log-max-size N      Rotate when log exceeds N bytes [default: 52428800 = 50 MiB]
-#   --log-rotate-keep N   Keep N rotated log files [default: 7]
-#   --allow-primary-as-replica  Allow primary even if node is configured as replica (--primary only)
+#   --defaults-file PATH              MySQL client option file (same as mysql --defaults-file) [default: /home/percona/.my.cnf]
+#   --mysql-bin PATH                  mysql binary [default: mysql]
+#   --max-lag N                       Default max replication lag (seconds) for --replica [default: 300]
+#   --no-vip-file PATH                If this file exist remove VIPs from node [default: /etc/keepalived/no_vip]
+#   --log-dir DIR                     Log directory [default: /var/log/percona]
+#   --log-max-size N                  Rotate when log exceeds N bytes [default: 52428800 = 50 MiB]
+#   --log-rotate-keep N               Keep N rotated log files [default: 7]
+#   --allow-replica-except-from IP    Allow primary check to pass even when replication is configured,
+#                                     unless Source_Host/Master_Host matches IP (--primary only).
+#                                     Set IP to the Keepalived peer address so a node replicating
+#                                     from its peer is never mistaken for the real primary.
 #
 # Exit: 0 = check passed, 1 = check failed
 
@@ -28,7 +31,7 @@ NO_VIP_FILE="/etc/keepalived/no_vip"
 LOG_DIR="/var/log/percona"
 LOG_MAX_SIZE="52428800"
 LOG_ROTATE_KEEP="7"
-ALLOW_PRIMARY_AS_REPLICA="0"
+ALLOW_REPLICA_EXCEPT_FROM=""
 
 MODE=""
 
@@ -88,8 +91,9 @@ while [[ $# -gt 0 ]]; do
       fi
       shift
       ;;
-    --allow-primary-as-replica)
-      ALLOW_PRIMARY_AS_REPLICA="1"
+    --allow-replica-except-from)
+      shift
+      ALLOW_REPLICA_EXCEPT_FROM="${1:-}"
       shift
       ;;
     -h|--help)
@@ -155,7 +159,9 @@ run_mysql_vertical() {
 }
 
 # --- Check: primary (writer) ---
-# Success: read_only=0, and ( if ALLOW_PRIMARY_AS_REPLICA != 1 ) not configured as replica.
+# Success: read_only=0.
+# Without --allow-replica-except-from: node must have no replication configured.
+# With    --allow-replica-except-from IP: replication is tolerated unless Source_Host matches IP.
 check_primary() {
   local read_only
   read_only="$(run_mysql "SELECT @@global.read_only;" 2>/dev/null | tr -d '\r\n' | awk '{print $1}')"
@@ -164,12 +170,25 @@ check_primary() {
     return 1
   fi
 
-  if [[ "$ALLOW_PRIMARY_AS_REPLICA" != "1" ]]; then
-    local replica_status
-    replica_status="$(run_mysql "SHOW REPLICA STATUS")"
-    [[ -z "$replica_status" ]] && replica_status="$(run_mysql "SHOW SLAVE STATUS" || true)"
+  local replica_status source_host
+  replica_status="$(run_mysql "SHOW REPLICA STATUS")"
+  [[ -z "$replica_status" ]] && replica_status="$(run_mysql "SHOW SLAVE STATUS" || true)"
+
+  if [[ -n "$ALLOW_REPLICA_EXCEPT_FROM" ]]; then
     if [[ -n "$replica_status" ]]; then
-      log "primary failed: node is replica, cannot be primary"
+      source_host="$(run_mysql_vertical "SHOW REPLICA STATUS\\G" 2>/dev/null \
+        | awk -F': ' '/Source_Host:|Master_Host:/ {print $2; exit}')"
+      [[ -z "$source_host" ]] && source_host="$(run_mysql_vertical "SHOW SLAVE STATUS\\G" 2>/dev/null \
+        | awk -F': ' '/Master_Host:/ {print $2; exit}')"
+      source_host="${source_host// /}"
+      if [[ "$source_host" == "$ALLOW_REPLICA_EXCEPT_FROM" ]]; then
+        log "primary failed: Source_Host=${source_host} matches peer IP ${ALLOW_REPLICA_EXCEPT_FROM}, node is not the primary"
+        return 1
+      fi
+    fi
+  else
+    if [[ -n "$replica_status" ]]; then
+      log "primary failed: node is configured as replica; use --allow-replica-except-from to override"
       return 1
     fi
   fi
