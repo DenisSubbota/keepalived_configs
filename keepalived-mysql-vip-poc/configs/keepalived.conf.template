@@ -1,4 +1,4 @@
-! Keepalived configuration template for MySQL VIPs
+! Keepalived configuration templatefor MySQL VIPs
 ! Edit only the variables below for each node.
 !------------------------------------------------
 $KEEPALIVED_INTERFACE=eth0
@@ -15,11 +15,12 @@ $KEEPALIVED_MAX_LAG_SECONDS=300
 global_defs {
     enable_script_security
     script_user root
+    vrrp_notify_fifo /run/keepalived-vrrp.fifo
+    vrrp_notify_fifo_script "/etc/keepalived/notify_fifo_handler.sh --cluster ${KEEPALIVED_CLUSTER} --writer-vip ${KEEPALIVED_WRITER_VIP} --reader-vip ${KEEPALIVED_READER_VIP}"
+    vrrp_notify_priority_changes true
 }
 
-! Writer: node must be writable.
-! On writer failure:
-! - VIP - removed if no healthy candidates 
+! Writer: node must be writable, and must not replicate from the Keepalived peer (see --allow-replica-except-from).
 vrrp_script chk_mysql_writer {
     script "/etc/keepalived/check_mysql.sh --primary --allow-replica-except-from ${KEEPALIVED_PEER_IP}"
     interval 5
@@ -34,8 +35,6 @@ vrrp_script chk_mysql_reader {
 }
 
 ! Reader fallback: node may be either a healthy reader or a healthy writer.
-! On both reader failure:
-! - VIP - removed if no healthy candidates 
 vrrp_script chk_mysql_writer_or_reader {
     script "/etc/keepalived/check_mysql.sh --writer-or-reader --allow-replica-except-from ${KEEPALIVED_PEER_IP} --max-lag ${KEEPALIVED_MAX_LAG_SECONDS}"
     interval 5
@@ -64,11 +63,8 @@ vrrp_instance VI_MYSQL_WRITER {
 
     track_script {
         chk_mysql_writer
+        ! Sticky VIP mode: chk_mysql_writer weight -5
     }
-
-    notify_master "/etc/keepalived/keepalived_mysql_prom_handler.sh --status ok --vip ${KEEPALIVED_WRITER_VIP} --role writer --cluster ${KEEPALIVED_CLUSTER}"
-    notify_backup "/etc/keepalived/keepalived_mysql_prom_handler.sh --status fail --vip ${KEEPALIVED_WRITER_VIP} --role writer --cluster ${KEEPALIVED_CLUSTER}"
-    notify_fault "/etc/keepalived/keepalived_mysql_prom_handler.sh --status fail --vip ${KEEPALIVED_WRITER_VIP} --role writer --cluster ${KEEPALIVED_CLUSTER}"
 }
 
 # Reader VIP
@@ -93,12 +89,9 @@ vrrp_instance VI_MYSQL_READER {
     }
 
     track_script {
-        chk_mysql_writer weight 5
-        chk_mysql_reader weight 10
-        chk_mysql_writer_or_reader
+       chk_mysql_writer weight 5
+       chk_mysql_reader weight 10
+       chk_mysql_writer_or_reader
+      ! Sticky VIP mode: chk_mysql_writer_or_reader weight -5 
     }
-
-    notify_master "/etc/keepalived/keepalived_mysql_prom_handler.sh --status ok --vip ${KEEPALIVED_READER_VIP} --role reader --cluster ${KEEPALIVED_CLUSTER}"
-    notify_backup "/etc/keepalived/keepalived_mysql_prom_handler.sh --status fail --vip ${KEEPALIVED_READER_VIP} --role reader --cluster ${KEEPALIVED_CLUSTER}"
-    notify_fault "/etc/keepalived/keepalived_mysql_prom_handler.sh --status fail --vip ${KEEPALIVED_READER_VIP} --role reader --cluster ${KEEPALIVED_CLUSTER}"
 }
