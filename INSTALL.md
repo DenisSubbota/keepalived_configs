@@ -1,6 +1,5 @@
 # Installation
-
-Deploy keepalived with separate writer and reader VIPs on two MySQL nodes. For behaviour, health checks, and sticky vs non-sticky VIPs, see [README.md](README.md).
+For general info about solution see [README.md](README.md).
 
 ## 1. Install keepalived
 
@@ -20,12 +19,7 @@ sudo install -m 755 check_mysql.sh notify_fifo_handler.sh /etc/keepalived/
 
 Copy `keepalived.conf.template` to `/etc/keepalived/keepalived.conf`.
 
-The template uses placeholders in two forms: `$KEEPALIVED_*` (e.g. `interface`, `unicast`) and `${KEEPALIVED_*}` (e.g. `virtual_ipaddress`, `vrrp_script` command lines, `vrrp_notify_fifo_script`). **Use the same real values everywhere** after editing.
-
-The lines at the top between the dashed comments (`$KEEPALIVED_INTERFACE=eth0`, and so on) are a **reference block only**: they are not valid keepalived directives. Either **delete that whole block** after you have substituted values, or replace every placeholder in the rest of the file with literals so the config is self-contained.
-
-**Per node:** `KEEPALIVED_NODE_IP` must be **this host’s** IP and `KEEPALIVED_PEER_IP` must be **the other** keepalived node. All other placeholders (`WRITER_VIP`, `READER_VIP`, interface, cluster name, max lag) are normally the **same** on both nodes.
-
+Replace every placeholder with your values (see the table below).
 
 | Placeholder | Description |
 |-------------|-------------|
@@ -48,7 +42,6 @@ KEEPALIVED_MAX_LAG_SECONDS=300
 KEEPALIVED_NODE_IP=10.20.30.10
 KEEPALIVED_PEER_IP=10.20.30.11
 ```
-
 On the other node use `KEEPALIVED_NODE_IP=10.20.30.11` and `KEEPALIVED_PEER_IP=10.20.30.10`.
 
 Set a strong `auth_pass` in both `vrrp_instance` blocks instead of the template default.
@@ -62,11 +55,11 @@ See **VIP behaviour** in [README.md](README.md).
 
 ## 5. MySQL credentials for checks
 
-Ensure the check can connect to MySQL non-interactively (for example `~percona/.my.cnf` for the monitoring user), as described under **Requirements** in the README.
+Ensure the check can connect to MySQL non-interactively using `/home/percona/.my.cnf` file
 
 ## 6. Verify health checks
 
-Run the checks as **root** (keepalived runs them as root). Exit code **0** means healthy for that role.
+Run the checks as **root**. Exit code **0** means healthy for that role.
 
 **On the primary (writer) node:**
 
@@ -85,10 +78,7 @@ echo $?
 Replace `KEEPALIVED_PEER_IP` and `KEEPALIVED_MAX_LAG_SECONDS` with the same values you use in `keepalived.conf`.
 
 ## 7. Alerting
-
-1. Load `keepalived-mysql-vip.alerts.yaml` into your PMM / Prometheus rule set as you usually do for custom alerts.
-2. On **each** node, ensure the PMM agent’s **textfile collector** is enabled and that `notify_fifo_handler.sh` can write its output directory (default `/home/percona/pmm/collectors/textfile-collector/high-resolution`). Adjust ownership or pass `--prom-output-dir` in `vrrp_notify_fifo_script` if you use a different path.
-3. After keepalived has run, confirm `.prom` files appear under that directory and show up in PMM for the node.
+Create alert `Percona_MS_KeepalivedMySQLVIPUnhealthy` using `keepalived-mysql-vip.alerts.yaml` file from repo into PMM-server 
 
 ## 8. Start keepalived — primary first
 

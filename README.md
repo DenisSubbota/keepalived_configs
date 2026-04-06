@@ -1,20 +1,17 @@
 # Keepalived MySQL VIP 
 
-Two-node MySQL HA with separate writer and reader VIPs, health checks via `check_mysql.sh`, and PMM-friendly metrics from the FIFO notifier.
+Keepalived solution provides simmilar solution as gas/ip_controller for MySQL, adds and deletes virtual IPs on simple MySQL (source - replica) ReplicaSet
 
 ## Requirements
-- Keepalived v2 on both nodes
-- PMM agent with the textfile collector enabled on both nodes if you want FIFO metrics and the bundled alerts (see **Alerting**)
-- MySQL 5.7 through 8.4 supported, with a readable client config for the check user (default in `check_mysql.sh`: `/home/percona/.my.cnf`; override with `--defaults-file` if needed)
-
-### VRRP / firewall
-No TCP/UDP: VRRP is **IP protocol 112** ([RFC 5798](https://www.rfc-editor.org/rfc/rfc5798)). Multicast mode uses **224.0.0.18**; this template uses **`unicast_peer`**, so allow **proto 112** both ways between the two node IPs (and **224.0.0.18** if you use multicast).
+- Keepalived v2 and above
+- PMM agent configured 
+- MySQL 5.7/8.0/8.4 supported
 
 
 ### Solution features
-- **Automatic role detection**: You do not assign “writer” or “reader” in keepalived by hand. `check_mysql.sh` decides at runtime from MySQL (`read_only`, replication, lag, etc.). After a failover, the former primary can become a replica; if it passes the reader checks, the reader VIP can move there without editing keepalived—same for a node that promotes to writer and the writer VIP.
-- **Sticky or non-sticky VIPs**: Choose whether failed checks drop the VIP (FAULT) or only adjust priority; see **VIP behaviour** below.
-- **Observability and alerting**: VRRP state changes are published as Prometheus textfile metrics via the FIFO notifier and scraped by the PMM agent; use alerting rules against those metrics (see **Alerting**).
+- **Automatic role detection**: Based on the health checks from `check_mysql.sh`, writer or reader role attached to node
+- **Sticky or non-sticky VIPs**: Choose whether failed checks drop the VIP (FAULT) or only adjust priority
+- **Observability and alerting**: VRRP state changes are published as Prometheus textfile metrics via the FIFO notifier `notify_fifo_handler.sh` and scraped by the PMM agent
 
 ## Topology
 
@@ -82,7 +79,7 @@ Used so the reader VIP can land on the writer-capable node when the replica is u
 Keepalived `track_script` default **weight `0`**: repeated script failure puts the instance in **FAULT** (VIP dropped). A **non-zero** weight changes **priority** on success/failure instead (see `vrrp_script` / `track_script` in `keepalived.conf(5)`), which is how you avoid immediate FAULT in “sticky” setups.
 
 
-### Non-sticky (recommended)
+### Non-sticky (recommended - default in template)
 
 VIP should leave a node that is not healthy for that role.
 
