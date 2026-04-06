@@ -1,4 +1,4 @@
-! Keepalived configuration templatefor MySQL VIPs
+! Keepalived configuration template for MySQL VIPs
 ! Edit only the variables below for each node.
 !------------------------------------------------
 $KEEPALIVED_INTERFACE=eth0

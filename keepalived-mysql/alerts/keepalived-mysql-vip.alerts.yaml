@@ -4,8 +4,10 @@
 # (vip and role are written by the handler but stripped during scrape relabeling.)
 #
 # Per-node VIP health:
-#   Each node should hold at least one VIP (writer or reader).
-#   Value 1 means the node is not able to hold any VIP.
+#   `min by (cluster, node_name)(percona_keepalived_mysql) == 1` means every
+#   scraped series for that node is in fail state (1); typically both writer
+#   and reader VIP roles are unhealthy on that host. A healthy node usually
+#   has at least one role at 0 (ok).
 - alert: Percona_MS_KeepalivedMySQLVIPUnhealthy
   expr: |
     min by (cluster, node_name) (percona_keepalived_mysql) == 1
