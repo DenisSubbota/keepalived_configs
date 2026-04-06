@@ -1,13 +1,3 @@
-# Keepalived MySQL VIP alert.
-# Metric: percona_keepalived_mysql (0=ok/VIP held, 1=fail/VIP not held).
-# Available labels after PMM scrape relabeling: cluster, node_name.
-# (vip and role are written by the handler but stripped during scrape relabeling.)
-#
-# Per-node VIP health:
-#   `min by (cluster, node_name)(percona_keepalived_mysql) == 1` means every
-#   scraped series for that node is in fail state (1); typically both writer
-#   and reader VIP roles are unhealthy on that host. A healthy node usually
-#   has at least one role at 0 (ok).
 - alert: Percona_MS_KeepalivedMySQLVIPUnhealthy
   expr: |
     min by (cluster, node_name) (percona_keepalived_mysql) == 1
