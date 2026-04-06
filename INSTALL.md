@@ -8,17 +8,17 @@ Install the keepalived package on **both** nodes.
 
 ## 2. Install scripts
 
-From this repository, copy `scripts/check_mysql.sh` and `scripts/notify_fifo_handler.sh` to `/etc/keepalived/` on each node and make them executable:
+From this repository, copy `check_mysql.sh` and `notify_fifo_handler.sh` to `/etc/keepalived/` on each node and make them executable:
 
 ```bash
-sudo install -m 755 scripts/check_mysql.sh scripts/notify_fifo_handler.sh /etc/keepalived/
+sudo install -m 755 check_mysql.sh notify_fifo_handler.sh /etc/keepalived/
 ```
 
 (Run from the repo root, or use full paths to the script files.)
 
 ## 3. Configure keepalived
 
-Copy `configs/keepalived.conf.template` to `/etc/keepalived/keepalived.conf`.
+Copy `keepalived.conf.template` to `/etc/keepalived/keepalived.conf`.
 
 The template uses placeholders in two forms: `$KEEPALIVED_*` (e.g. `interface`, `unicast`) and `${KEEPALIVED_*}` (e.g. `virtual_ipaddress`, `vrrp_script` command lines, `vrrp_notify_fifo_script`). **Use the same real values everywhere** after editing.
 
@@ -37,17 +37,19 @@ The lines at the top between the dashed comments (`$KEEPALIVED_INTERFACE=eth0`, 
 | `KEEPALIVED_NODE_IP` | This host’s private IP |
 | `KEEPALIVED_PEER_IP` | The other keepalived peer’s private IP |
 
-Example values (adjust for your environment):
+Example values matching the reference block in `keepalived.conf.template` (swap `NODE` / `PEER` on the second host):
 
 ```text
 KEEPALIVED_INTERFACE=eth0
-KEEPALIVED_WRITER_VIP=192.168.88.18
-KEEPALIVED_READER_VIP=192.168.88.19
-KEEPALIVED_CLUSTER=mycluster
+KEEPALIVED_WRITER_VIP=10.20.30.101
+KEEPALIVED_READER_VIP=10.20.30.102
+KEEPALIVED_CLUSTER=cluster_app
 KEEPALIVED_MAX_LAG_SECONDS=300
-KEEPALIVED_NODE_IP=10.30.50.115
-KEEPALIVED_PEER_IP=10.30.50.117
+KEEPALIVED_NODE_IP=10.20.30.10
+KEEPALIVED_PEER_IP=10.20.30.11
 ```
+
+On the other node use `KEEPALIVED_NODE_IP=10.20.30.11` and `KEEPALIVED_PEER_IP=10.20.30.10`.
 
 Set a strong `auth_pass` in both `vrrp_instance` blocks instead of the template default.
 
@@ -84,7 +86,7 @@ Replace `KEEPALIVED_PEER_IP` and `KEEPALIVED_MAX_LAG_SECONDS` with the same valu
 
 ## 7. Alerting
 
-1. Load `alerts/keepalived-mysql-vip.alerts.yaml` into your PMM / Prometheus rule set as you usually do for custom alerts.
+1. Load `keepalived-mysql-vip.alerts.yaml` into your PMM / Prometheus rule set as you usually do for custom alerts.
 2. On **each** node, ensure the PMM agent’s **textfile collector** is enabled and that `notify_fifo_handler.sh` can write its output directory (default `/home/percona/pmm/collectors/textfile-collector/high-resolution`). Adjust ownership or pass `--prom-output-dir` in `vrrp_notify_fifo_script` if you use a different path.
 3. After keepalived has run, confirm `.prom` files appear under that directory and show up in PMM for the node.
 

@@ -1,6 +1,6 @@
 # Keepalived MySQL VIP 
 
-Two-node MySQL HA with separate writer and reader VIPs, health checks via `scripts/check_mysql.sh`, and PMM-friendly metrics from the FIFO notifier.
+Two-node MySQL HA with separate writer and reader VIPs, health checks via `check_mysql.sh`, and PMM-friendly metrics from the FIFO notifier.
 
 ## Requirements
 - Keepalived v2 on both nodes
@@ -109,7 +109,7 @@ vrrp_instance VI_MYSQL_READER {
 
 ### Sticky
 
-Same idea as the legacy `ip_controller` flow: the VIP can **remain** on the last node while checks fail; alerting still fires. In `configs/keepalived.conf.template`, **uncomment** the sticky-mode `weight -5` lines (remove the leading `!` so keepalived sees `chk_mysql_writer weight -5` and `chk_mysql_writer_or_reader weight -5`) so those scripts adjust priority instead of using default weight `0` / FAULT.
+Same idea as the legacy `ip_controller` flow: the VIP can **remain** on the last node while checks fail; alerting still fires. In `keepalived.conf.template`, **uncomment** the sticky-mode `weight -5` lines (remove the leading `!` so keepalived sees `chk_mysql_writer weight -5` and `chk_mysql_writer_or_reader weight -5`) so those scripts adjust priority instead of using default weight `0` / FAULT.
 
 ```bash
 vrrp_instance VI_MYSQL_WRITER {
@@ -131,6 +131,6 @@ vrrp_instance VI_MYSQL_READER {
 
 ## Alerting
 
-Keepalived writes VRRP state changes to a FIFO (`vrrp_notify_fifo` in the template). `notify_fifo_handler.sh` writes Prometheus textfile metrics (default directory: `/home/percona/pmm/collectors/textfile-collector/high-resolution`; override with `--prom-output-dir`). The PMM agent scrapes those files like any other textfile collector metrics. Example rules: `alerts/keepalived-mysql-vip.alerts.yaml`.
+Keepalived writes VRRP state changes to a FIFO (`vrrp_notify_fifo` in the template). `notify_fifo_handler.sh` writes Prometheus textfile metrics (default directory: `/home/percona/pmm/collectors/textfile-collector/high-resolution`; override with `--prom-output-dir`). The PMM agent scrapes those files like any other textfile collector metrics. Example rules: `keepalived-mysql-vip.alerts.yaml`.
 
 For installation steps, see [INSTALL.md](INSTALL.md).
