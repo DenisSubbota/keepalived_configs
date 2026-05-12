@@ -10,4 +10,3 @@
       Node {{ $labels.node_name }} in cluster {{ $labels.cluster }} cannot hold writer or reader VIP.
       Check: systemctl status keepalived, journalctl -u keepalived,
       /var/log/percona/keepalived_check_mysql.log, and MySQL replication status.
-
