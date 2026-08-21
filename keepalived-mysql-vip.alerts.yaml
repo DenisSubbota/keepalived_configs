@@ -1,12 +1,21 @@
-- alert: Percona_MS_KeepalivedMySQLVIPUnhealthy
-  expr: |
-    min by (cluster, node_name) (percona_keepalived_mysql) == 1
-  for: 1m
-  labels:
+---
+# PMM alert rule template. Upload it in PMM under Alerting -> Alert rule templates,
+# or drop the file into /srv/alerting/templates/ on the PMM server and restart PMM.
+# PMM validates this schema on upload, so keep the "templates:" root key.
+#
+# Fires per node: a node whose writer AND reader metric are both 1 holds neither
+# VIP. In a healthy two-node cluster each node holds one, so min() is 0 there.
+templates:
+  - name: Percona_MS_KeepalivedMySQLVIPUnhealthy
+    version: 1
+    summary: Keepalived MySQL VIP unhealthy
+    expr: |-
+      min by (cluster, node_name) (percona_keepalived_mysql) == 1
+    for: 1m
     severity: critical
-  annotations:
-    summary: "CRITICAL - Keepalived MySQL VIP unhealthy on {{ $labels.node_name }} ({{ $labels.cluster }})"
-    description: |
-      Node {{ $labels.node_name }} in cluster {{ $labels.cluster }} cannot hold writer or reader VIP.
-      Check: systemctl status keepalived, journalctl -u keepalived,
-      /var/log/percona/keepalived_check_mysql.log, and MySQL replication status.
+    annotations:
+      summary: "CRITICAL - Keepalived MySQL VIP unhealthy on {{ $labels.node_name }} ({{ $labels.cluster }})"
+      description: |-
+        Node {{ $labels.node_name }} in cluster {{ $labels.cluster }} holds neither the writer nor the reader VIP.
+        Check: systemctl status keepalived, journalctl -u keepalived,
+        /var/log/percona/keepalived_check_mysql.log, and MySQL replication status.

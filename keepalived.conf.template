@@ -1,4 +1,7 @@
 # Keepalived configuration template for MySQL VIPs
+# Needs keepalived 2.0.7 or newer: the $VARIABLE=value substitution used below
+# arrived in 1.4.0 and its last parsing bugs were fixed in 2.0.7.
+#
 # Edit only the variables below for each node.
 #------------------------------------------------
 $KEEPALIVED_INTERFACE=eth0
@@ -10,42 +13,89 @@ $KEEPALIVED_READER_VIP=10.20.30.102
 
 $KEEPALIVED_CLUSTER=cluster_app
 $KEEPALIVED_MAX_LAG_SECONDS=300
+
+# MySQL client option file holding the check user credentials. The check script
+# runs as root, so this file must not be writable (or replaceable) by anyone else.
+$KEEPALIVED_MYSQL_CNF=/etc/keepalived/.my.cnf
+
+# Base VRRP priority. Use the SAME value on both nodes: the reader VIP is placed
+# by the track_script weights below (+10 for a healthy replica, +5 for the
+# writer), and a different base priority per node would cancel that preference.
+# Effective priority is clamped to 1-254, and the weights add up to +15, so keep
+# this between 10 and 200. Pass the same value to the FIFO handler as
+# --priority-threshold, so sticky mode (negative weight) reports "unhealthy".
+$KEEPALIVED_PRIORITY=10
+
+# VRRP shared secret. Only the FIRST 8 CHARACTERS are used by VRRP - anything
+# longer is silently truncated. Must match on both nodes.
+$KEEPALIVED_AUTH_PASS=Ch4ng3Me
+
+# VRRP router IDs. Must be unique per L2 segment: another keepalived pair on the
+# same network using 51/52 would fight over these VIPs.
+$KEEPALIVED_WRITER_ROUTER_ID=51
+$KEEPALIVED_READER_ROUTER_ID=52
 #------------------------------------------------
 
 global_defs {
     enable_script_security
+    # The check script reads a root-only MySQL option file, so it runs as root.
+    # With enable_script_security every directory in the script path, and the
+    # script itself, must be root-owned and not group- or world-writable.
     script_user root
     vrrp_notify_fifo /run/keepalived-vrrp.fifo
-    vrrp_notify_fifo_script "/etc/keepalived/notify_fifo_handler.sh --cluster ${KEEPALIVED_CLUSTER} --writer-vip ${KEEPALIVED_WRITER_VIP} --reader-vip ${KEEPALIVED_READER_VIP}"
+    vrrp_notify_fifo_script "/etc/keepalived/notify_fifo_handler.sh --cluster ${KEEPALIVED_CLUSTER} --writer-vip ${KEEPALIVED_WRITER_VIP} --reader-vip ${KEEPALIVED_READER_VIP} --priority-threshold ${KEEPALIVED_PRIORITY}"
     vrrp_notify_priority_changes true
 }
 
-# Writer: node must be writable, and must not replicate from the Keepalived peer (see --allow-replica-except-from).
+# All three scripts:
+#   timeout 5   - same as interval; keepalived kills a slower run and counts it
+#                 as a failure, which is what we want from a hung MySQL.
+#   rise/fall 2 - two runs in a row must agree before keepalived acts. The
+#                 default is 1, which flaps on a single slow check.
+#   init_fail   - treat the script as failed until it has actually passed, so a
+#                 keepalived restart cannot hand the writer VIP to a replica for
+#                 the first few seconds.
+
+# Writer: node must be writable, and must not replicate from the Keepalived peer
+# (see --allow-replica-except-from).
 vrrp_script chk_mysql_writer {
-    script "/etc/keepalived/check_mysql.sh --primary --allow-replica-except-from ${KEEPALIVED_PEER_IP}"
+    script "/etc/keepalived/check_mysql.sh --primary --defaults-file ${KEEPALIVED_MYSQL_CNF} --allow-replica-except-from ${KEEPALIVED_PEER_IP}"
     interval 5
+    timeout 5
     rise 2
     fall 2
+    init_fail
 }
 
 # Reader: node must be a healthy replica.
 vrrp_script chk_mysql_reader {
-    script "/etc/keepalived/check_mysql.sh --replica --max-lag ${KEEPALIVED_MAX_LAG_SECONDS}"
+    script "/etc/keepalived/check_mysql.sh --replica --defaults-file ${KEEPALIVED_MYSQL_CNF} --max-lag ${KEEPALIVED_MAX_LAG_SECONDS}"
     interval 5
+    timeout 5
+    rise 2
+    fall 2
+    init_fail
 }
 
 # Reader fallback: node may be either a healthy reader or a healthy writer.
 vrrp_script chk_mysql_writer_or_reader {
-    script "/etc/keepalived/check_mysql.sh --writer-or-reader --allow-replica-except-from ${KEEPALIVED_PEER_IP} --max-lag ${KEEPALIVED_MAX_LAG_SECONDS}"
+    script "/etc/keepalived/check_mysql.sh --writer-or-reader --defaults-file ${KEEPALIVED_MYSQL_CNF} --allow-replica-except-from ${KEEPALIVED_PEER_IP} --max-lag ${KEEPALIVED_MAX_LAG_SECONDS}"
     interval 5
+    timeout 5
+    rise 2
+    fall 2
+    init_fail
 }
 
 # Writer VIP
 vrrp_instance VI_MYSQL_WRITER {
+    # state is only a hint for the first transition; the election is decided by
+    # priority and the track_script weights. Set BACKUP here on the node that
+    # should not normally be the writer.
     state MASTER
     interface ${KEEPALIVED_INTERFACE}
-    virtual_router_id 51
-    priority 10
+    virtual_router_id ${KEEPALIVED_WRITER_ROUTER_ID}
+    priority ${KEEPALIVED_PRIORITY}
     advert_int 1
     unicast_src_ip ${KEEPALIVED_NODE_IP}
     unicast_peer {
@@ -54,7 +104,7 @@ vrrp_instance VI_MYSQL_WRITER {
 
     authentication {
         auth_type PASS
-        auth_pass CHANGE_ME_SHARED_SECRET
+        auth_pass ${KEEPALIVED_AUTH_PASS}
     }
 
     virtual_ipaddress {
@@ -62,8 +112,10 @@ vrrp_instance VI_MYSQL_WRITER {
     }
 
     track_script {
+        # Sticky VIP mode: comment the plain line and uncomment the weighted one.
+        # Keeping both makes keepalived ignore the second as a duplicate.
         chk_mysql_writer
-        # Sticky VIP mode: chk_mysql_writer weight -5
+        #chk_mysql_writer weight -5
     }
 }
 
@@ -71,8 +123,8 @@ vrrp_instance VI_MYSQL_WRITER {
 vrrp_instance VI_MYSQL_READER {
     state BACKUP
     interface ${KEEPALIVED_INTERFACE}
-    virtual_router_id 52
-    priority 10
+    virtual_router_id ${KEEPALIVED_READER_ROUTER_ID}
+    priority ${KEEPALIVED_PRIORITY}
     advert_int 1
     unicast_src_ip ${KEEPALIVED_NODE_IP}
     unicast_peer {
@@ -81,7 +133,7 @@ vrrp_instance VI_MYSQL_READER {
 
     authentication {
         auth_type PASS
-        auth_pass CHANGE_ME_SHARED_SECRET
+        auth_pass ${KEEPALIVED_AUTH_PASS}
     }
 
     virtual_ipaddress {
@@ -91,7 +143,9 @@ vrrp_instance VI_MYSQL_READER {
     track_script {
         chk_mysql_writer weight 5
         chk_mysql_reader weight 10
+        # Sticky VIP mode: comment the plain line and uncomment the weighted one.
+        # Keeping both makes keepalived ignore the second as a duplicate.
         chk_mysql_writer_or_reader
-        # Sticky VIP mode: chk_mysql_writer_or_reader weight -5
+        #chk_mysql_writer_or_reader weight -5
     }
 }
